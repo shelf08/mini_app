@@ -15,6 +15,8 @@ html, body {
   background: radial-gradient(1200px 700px at 50% 10%, #1f2a4a, var(--bg));
   color: var(--text);
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 #app {
@@ -45,6 +47,7 @@ canvas#game {
   background: rgba(2, 6, 23, 0.65);
   border: 1px solid rgba(255, 255, 255, 0.10);
   display: block;
+  touch-action: none;
 }
 
 #overlay {

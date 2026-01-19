@@ -1,6 +1,6 @@
 # Finnik mini-app (Telegram WebApp game)
 
-Мини-игра в Telegram по типу “волк ловит яйца”: 3 дорожки (left/middle/right), управление свайпами, промах по яйцу = конец игры, бомба при поимке = конец игры.
+Мини-игра в Telegram по типу “лови кексы”: 3 дорожки (left/middle/right), управление свайпами, промах по кексу = конец игры, бомба при поимке = конец игры.
 
 ## Архитектура
 - `backend/` — FastAPI: отдаёт WebApp (статику) и API для лидербордов/сабмита результатов.
@@ -10,9 +10,8 @@
 ## Быстрый старт (dev)
 ### 1) Установить зависимости
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
 ### 2) Настроить переменные окружения
@@ -21,11 +20,23 @@ pip install -r requirements.txt
 - Скопируйте `env.template` в `env.local`
 - Заполните `TELEGRAM_BOT_TOKEN` и `WEBAPP_URL`
 
+#### Что такое `WEBAPP_URL` и где его взять
+`WEBAPP_URL` — **публичный URL, по которому Telegram откроет WebApp**. В этом проекте фронтенд раздаётся самим FastAPI по корню `/`, поэтому обычно это **адрес backend’а**.
+
+- Dev (локально): подними backend на `http://127.0.0.1:8000`, затем сделай HTTPS-туннель на этот порт (например, ngrok или Cloudflare Tunnel) и возьми выданный `https://...`.
+  - Пример значения: `WEBAPP_URL=https://your-tunnel.example`
+- Prod: задеплой backend (Render/Fly.io/Railway/VPS) и укажи домен вида `https://your-domain`.
+
 ### 3) Запустить backend
 ```bash
 copy env.template env.local
 notepad env.local
-uvicorn backend.app:app --reload --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python -m uvicorn backend.app:app --reload --host 127.0.0.1 --port 8000
+```
+
+### 3.1)
+```bash
+ssh -R 80:localhost:8000 ssh.localhost.run
 ```
 
 ### 4) Запустить bot (в другом терминале)

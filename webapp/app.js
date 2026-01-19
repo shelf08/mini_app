@@ -4,11 +4,51 @@ const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp 
 if (tg) {
   tg.ready();
   tg.expand();
+  // Prevent Telegram's vertical swipe gesture from collapsing/closing the mini app.
+  // Available in Telegram WebApp API (Bot API 7.7+). Safe to call conditionally.
+  if (typeof tg.disableVerticalSwipes === "function") {
+    tg.disableVerticalSwipes();
+  }
 }
 
 const $ = (sel) => document.querySelector(sel);
 const canvas = $("#game");
 const ctx = canvas.getContext("2d");
+
+// Background music
+const bgm = $("#bgm");
+let bgmStarted = false;
+
+async function tryStartBgm() {
+  if (!bgm || bgmStarted) return;
+  try {
+    bgm.volume = 0.35;
+    await bgm.play();
+    bgmStarted = true;
+  } catch (_) {
+    // Autoplay with sound may be blocked until the first user gesture.
+  }
+}
+
+function bindBgmUnlockOnce() {
+  if (!bgm) return;
+  const unlock = () => {
+    tryStartBgm();
+  };
+  document.addEventListener("pointerdown", unlock, { once: true, passive: true });
+  document.addEventListener("touchstart", unlock, { once: true, passive: true });
+  document.addEventListener("keydown", unlock, { once: true });
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!bgm) return;
+  if (document.hidden) {
+    bgm.pause();
+    bgmStarted = false;
+  } else {
+    tryStartBgm();
+  }
+});
 
 const scoreEl = $("#score");
 const statusEl = $("#status");
@@ -16,6 +56,81 @@ const overlayEl = $("#overlay");
 const overlayTitleEl = $("#overlayTitle");
 const overlayBodyEl = $("#overlayBody");
 const overlayButtonsEl = $("#overlayButtons");
+
+// Assets (images)
+const ASSET_BASE = "/assets/images";
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`Failed to load image: ${src}`));
+    img.src = src;
+  });
+}
+
+function drawImageCover(ctx2, img, x, y, w, h) {
+  // "background-size: cover" for canvas
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  if (!iw || !ih) return;
+
+  const scale = Math.max(w / iw, h / ih);
+  const sw = w / scale;
+  const sh = h / scale;
+  const sx = (iw - sw) / 2;
+  const sy = (ih - sh) / 2;
+  ctx2.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+}
+
+function drawImageCentered(ctx2, img, cx, cy, w, h) {
+  ctx2.drawImage(img, cx - w / 2, cy - h / 2, w, h);
+}
+
+const assets = {
+  loaded: false,
+  error: null,
+  bg: null,
+  player: { l: null, m: null, r: null },
+  cake: null,
+  cakeGold: null,
+  bomb: null,
+};
+
+async function loadAssets() {
+  try {
+    const [
+      bg,
+      playerL,
+      playerM,
+      playerR,
+      cake,
+      cakeGold,
+      bomb,
+    ] = await Promise.all([
+      loadImage(`${ASSET_BASE}/bg.png`),
+      loadImage(`${ASSET_BASE}/player_l.png`),
+      loadImage(`${ASSET_BASE}/player_m.png`),
+      loadImage(`${ASSET_BASE}/player_r.png`),
+      loadImage(`${ASSET_BASE}/cake.png`),
+      loadImage(`${ASSET_BASE}/cake_gold.png`),
+      loadImage(`${ASSET_BASE}/bomb.png`),
+    ]);
+
+    assets.bg = bg;
+    assets.player.l = playerL;
+    assets.player.m = playerM;
+    assets.player.r = playerR;
+    assets.cake = cake;
+    assets.cakeGold = cakeGold;
+    assets.bomb = bomb;
+    assets.loaded = true;
+  } catch (e) {
+    assets.error = e;
+    // Keep the game playable with fallback shapes.
+    console.warn(String(e));
+  }
+}
 
 // Game tuning
 const LANES = 3; // left, middle, right
@@ -70,14 +185,35 @@ function getRoute() {
 
 let game = null;
 
+function setClosingConfirmation(enabled) {
+  if (!tg) return;
+  if (enabled) {
+    if (typeof tg.enableClosingConfirmation === "function") tg.enableClosingConfirmation();
+  } else {
+    if (typeof tg.disableClosingConfirmation === "function") tg.disableClosingConfirmation();
+  }
+}
+
+// Extra guard: while playing, prevent vertical touch scrolling/overscroll anywhere in the app.
+// This reduces chances of triggering WebView collapse/close gestures.
+document.addEventListener("touchmove", (e) => {
+  if (game && game.state === "playing") e.preventDefault();
+}, { passive: false });
+
 function renderFrame() {
   const W = canvas.width;
   const H = canvas.height;
 
   // background
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = "rgba(2, 6, 23, 0.65)";
-  ctx.fillRect(0, 0, W, H);
+  if (assets.bg) {
+    drawImageCover(ctx, assets.bg, 0, 0, W, H);
+    ctx.fillStyle = "rgba(2, 6, 23, 0.25)"; // slight darken for contrast
+    ctx.fillRect(0, 0, W, H);
+  } else {
+    ctx.fillStyle = "rgba(2, 6, 23, 0.65)";
+    ctx.fillRect(0, 0, W, H);
+  }
 
   // lane guides
   const laneW = W / LANES;
@@ -92,43 +228,73 @@ function renderFrame() {
 
   if (!game) return;
 
+  // draw sizes (canvas pixels)
+  const ITEM_W = 48;
+  const ITEM_H = 48;
+  const BOMB_W = 52;
+  const BOMB_H = 52;
+  const PLAYER_W = 120;
+  const PLAYER_H = 120;
+
   // objects
   for (const o of game.objects) {
     const x = o.lane * laneW + laneW / 2;
     const y = o.y;
     if (o.type === "egg") {
-      ctx.fillStyle = "rgba(248,250,252,0.95)";
-      ctx.beginPath();
-      ctx.ellipse(x, y, 14, 18, 0, 0, Math.PI * 2);
-      ctx.fill();
+      if (assets.cake) {
+        drawImageCentered(ctx, assets.cake, x, y, ITEM_W, ITEM_H);
+      } else {
+        ctx.fillStyle = "rgba(248,250,252,0.95)";
+        ctx.beginPath();
+        ctx.ellipse(x, y, 14, 18, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
     } else if (o.type === "gold") {
-      ctx.fillStyle = "rgba(250, 204, 21, 0.95)";
-      ctx.beginPath();
-      ctx.ellipse(x, y, 14, 18, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(255,255,255,0.25)";
-      ctx.stroke();
+      if (assets.cakeGold) {
+        drawImageCentered(ctx, assets.cakeGold, x, y, ITEM_W, ITEM_H);
+      } else {
+        ctx.fillStyle = "rgba(250, 204, 21, 0.95)";
+        ctx.beginPath();
+        ctx.ellipse(x, y, 14, 18, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.25)";
+        ctx.stroke();
+      }
     } else if (o.type === "bomb") {
-      ctx.fillStyle = "rgba(239, 68, 68, 0.95)";
-      ctx.beginPath();
-      ctx.arc(x, y, 16, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "rgba(0,0,0,0.35)";
-      ctx.beginPath();
-      ctx.arc(x + 5, y - 4, 5, 0, Math.PI * 2);
-      ctx.fill();
+      if (assets.bomb) {
+        drawImageCentered(ctx, assets.bomb, x, y, BOMB_W, BOMB_H);
+      } else {
+        ctx.fillStyle = "rgba(239, 68, 68, 0.95)";
+        ctx.beginPath();
+        ctx.arc(x, y, 16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        ctx.beginPath();
+        ctx.arc(x + 5, y - 4, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
 
   // catcher (wolf basket)
   const basketLane = game.lane;
   const bx = basketLane * laneW + laneW / 2;
-  const by = H - 70;
-  ctx.fillStyle = "rgba(34,197,94,0.95)";
-  ctx.fillRect(bx - 38, by - 10, 76, 20);
-  ctx.fillStyle = "rgba(226,232,240,0.75)";
-  ctx.font = "12px system-ui";
-  ctx.fillText(["L", "M", "R"][basketLane], bx - 4, by - 18);
+  const playerBottomMargin = 18;
+  const py = H - playerBottomMargin - PLAYER_H / 2;
+
+  const poseKey = basketLane === 0 ? "l" : (basketLane === 1 ? "m" : "r");
+  const playerImg = assets.player[poseKey];
+
+  if (playerImg) {
+    drawImageCentered(ctx, playerImg, bx, py, PLAYER_W, PLAYER_H);
+  } else {
+    const by = H - 70;
+    ctx.fillStyle = "rgba(34,197,94,0.95)";
+    ctx.fillRect(bx - 38, by - 10, 76, 20);
+    ctx.fillStyle = "rgba(226,232,240,0.75)";
+    ctx.font = "12px system-ui";
+    ctx.fillText(["L", "M", "R"][basketLane], bx - 4, by - 18);
+  }
 }
 
 function startGame() {
@@ -147,12 +313,15 @@ function startGame() {
   scoreEl.textContent = "0";
   statusEl.textContent = "Свайп влево/вправо";
   setRoute("#/game");
+
+  // Make accidental close/swipe-down non-destructive: Telegram will show a confirmation dialog.
+  setClosingConfirmation(true);
 }
 
 function endGame(reason) {
   if (!game || game.state !== "playing") return;
   game.state = "over";
-  statusEl.textContent = "Игра окончена";
+  statusEl.textContent = "Ты проиграл(";
 
   const finalScore = game.score;
   const duration = Math.floor(nowMs() - game.startedAt);
@@ -168,7 +337,7 @@ function endGame(reason) {
   `;
 
   showOverlay({
-    title: "Проигрыш",
+    title: "Ты проиграл(",
     body,
     buttons: [
       { text: "Играть снова", kind: "primary", onClick: () => startGame() },
@@ -181,6 +350,9 @@ function endGame(reason) {
       overlayBodyEl.innerHTML += `<div class="small" style="margin-top:8px; color: rgba(239,68,68,0.9);">Ошибка отправки: ${escapeHtml(String(e))}</div>`;
     });
   }
+
+  // After game over, allow closing without extra confirmation.
+  setClosingConfirmation(false);
 }
 
 function escapeHtml(s) {
@@ -228,6 +400,7 @@ function tick() {
 
   const fallSpeed = BASE_FALL_SPEED * game.speedMult;
   const H = canvas.height;
+  // Catch line: tuned to match player sprite placement (hands/basket area).
   const catchY = H - 86;
 
   // move + collisions
@@ -258,7 +431,7 @@ function tick() {
 
     // miss condition: any egg reaching bottom uncaught ends the game
     if ((o.type === "egg" || o.type === "gold") && o.y >= H + 20) {
-      endGame("Ты пропустил яйцо.");
+      endGame("Ты пропустил кекс.");
       return;
     }
 
@@ -355,15 +528,17 @@ async function showLeadersOverlay() {
 function showHome() {
   statusEl.textContent = "Готово";
   showOverlay({
-    title: "Finnik: яйца",
+    title: "Лови кексы!",
     body: `
       <div class="small">
         - 3 дорожки: left/middle/right<br/>
         - Свайпы влево/вправо — движение<br/>
-        - Белое яйцо: <b>+10</b>, золотое: <b>+50</b><br/>
-        - Пропуск яйца — <b>конец игры</b><br/>
-        - После <b>50</b> очков скорость растёт: <b>x1.01</b> за каждое пойманное яйцо<br/>
-        - Бомбы появляются после <b>${BOMB_START_SCORE}</b> очков (поймал — конец игры)
+        - Шоколадный кекс: <b>+10</b>, золотой: <b>+50</b> очков<br/>
+        - Пропуск кекса - <b>конец игры</b><br/>
+        - После <b>50</b> очков - скорость начинает расти на <b>x1.01</b> за каждый пойманный кекс<br/>
+        - Бомбы появляются после <b>${BOMB_START_SCORE}</b> очков (поймал - конец игры)<br/>
+        <br/>
+        Удачи &lt;3
       </div>
     `,
     buttons: [
@@ -389,6 +564,13 @@ canvas.addEventListener("touchstart", (e) => {
   touchStartX = t.clientX;
   touchStartY = t.clientY;
 }, { passive: true });
+
+// Block vertical touch scrolling/overscroll while playing, so an accidental swipe-down
+// doesn't start collapsing the WebView.
+canvas.addEventListener("touchmove", (e) => {
+  if (!game || game.state !== "playing") return;
+  e.preventDefault();
+}, { passive: false });
 
 canvas.addEventListener("touchend", (e) => {
   const t = e.changedTouches[0];
@@ -423,5 +605,12 @@ window.addEventListener("hashchange", onRoute);
 
 tick();
 onRoute();
+
+// start preloading images (non-blocking)
+loadAssets();
+
+// Start background music (best-effort).
+tryStartBgm();
+bindBgmUnlockOnce();
 
 

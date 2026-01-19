@@ -15,9 +15,20 @@ def load_env() -> None:
     `.env` может быть запрещён в некоторых окружениях, поэтому поддерживаем `env.local`.
     """
 
+    # Если переменная уже существует, но пустая, python-dotenv с override=False
+    # не перезапишет её значением из файла. Убираем такие "пустые" значения,
+    # чтобы `env.local` мог корректно подхватиться.
+    for k in ("TELEGRAM_BOT_TOKEN", "WEBAPP_URL", "DB_PATH", "LOG_LEVEL"):
+        v = os.getenv(k)
+        if v is not None and not v.strip():
+            os.environ.pop(k, None)
+
+    # Важно: `env.local` должен иметь приоритет над `.env`.
+    # Иначе пустые значения в `.env` могут "заблокировать" значения из `env.local`
+    # при `override=False`.
     candidates = [
-        ROOT / ".env",
         ROOT / "env.local",
+        ROOT / ".env",
     ]
     for p in candidates:
         if p.exists():
