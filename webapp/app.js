@@ -4,6 +4,12 @@ const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp 
 if (tg) {
   tg.ready();
   tg.expand();
+  // Make Telegram chrome match HUD (beige), to avoid grey bars.
+  const HUD_BEIGE = "#FFD296";
+  if (typeof tg.setBackgroundColor === "function") tg.setBackgroundColor(HUD_BEIGE);
+  if (typeof tg.setHeaderColor === "function") tg.setHeaderColor(HUD_BEIGE);
+  // Newer clients: bottom bar (Android / iOS).
+  if (typeof tg.setBottomBarColor === "function") tg.setBottomBarColor(HUD_BEIGE);
   // Prevent Telegram's vertical swipe gesture from collapsing/closing the mini app.
   // Available in Telegram WebApp API (Bot API 7.7+). Safe to call conditionally.
   if (typeof tg.disableVerticalSwipes === "function") {
@@ -15,6 +21,26 @@ const $ = (sel) => document.querySelector(sel);
 const canvas = $("#game");
 const ctx = canvas.getContext("2d");
 
+// Canvas sizing (fit to screen, crisp on HiDPI)
+let viewW = canvas.width;
+let viewH = canvas.height;
+let dpr = 1;
+
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  dpr = window.devicePixelRatio || 1;
+  viewW = Math.max(1, Math.round(rect.width));
+  viewH = Math.max(1, Math.round(rect.height));
+  canvas.width = Math.round(viewW * dpr);
+  canvas.height = Math.round(viewH * dpr);
+  // Draw in CSS pixels (all game math uses viewW/viewH)
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+window.addEventListener("resize", resizeCanvas, { passive: true });
+window.addEventListener("orientationchange", resizeCanvas, { passive: true });
+
 // Background music
 const bgm = $("#bgm");
 let bgmStarted = false;
@@ -22,7 +48,7 @@ let bgmStarted = false;
 async function tryStartBgm() {
   if (!bgm || bgmStarted) return;
   try {
-    bgm.volume = 0.35;
+    bgm.volume = 0.075;
     await bgm.play();
     bgmStarted = true;
   } catch (_) {
@@ -141,6 +167,9 @@ const BOMB_START_SCORE = 150;
 const BOMB_CHANCE_AT_START = 0.10;
 const BOMB_CHANCE_AT_500 = 0.22;
 
+// Visual sizing
+const SPRITE_SCALE = 1.15; // +15%
+
 function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
 
 function nowMs() { return performance.now(); }
@@ -201,42 +230,26 @@ document.addEventListener("touchmove", (e) => {
 }, { passive: false });
 
 function renderFrame() {
-  const W = canvas.width;
-  const H = canvas.height;
+  const W = viewW;
+  const H = viewH;
 
   // background
   ctx.clearRect(0, 0, W, H);
-  if (assets.bg) {
-    drawImageCover(ctx, assets.bg, 0, 0, W, H);
-    ctx.fillStyle = "rgba(2, 6, 23, 0.25)"; // slight darken for contrast
-    ctx.fillRect(0, 0, W, H);
-  } else {
-    ctx.fillStyle = "rgba(2, 6, 23, 0.65)";
-    ctx.fillRect(0, 0, W, H);
-  }
-
-  // lane guides
-  const laneW = W / LANES;
-  ctx.strokeStyle = "rgba(255,255,255,0.08)";
-  ctx.lineWidth = 2;
-  for (let i = 1; i < LANES; i++) {
-    ctx.beginPath();
-    ctx.moveTo(i * laneW, 0);
-    ctx.lineTo(i * laneW, H);
-    ctx.stroke();
-  }
+  // IMPORTANT: фон уже задан на <body> (CSS cover).
+  // Canvas держим полностью прозрачным, чтобы не было видно его границ/подложки.
 
   if (!game) return;
 
   // draw sizes (canvas pixels)
-  const ITEM_W = 48;
-  const ITEM_H = 48;
-  const BOMB_W = 52;
-  const BOMB_H = 52;
-  const PLAYER_W = 120;
-  const PLAYER_H = 120;
+  const ITEM_W = 48 * SPRITE_SCALE;
+  const ITEM_H = 48 * SPRITE_SCALE;
+  const BOMB_W = 52 * SPRITE_SCALE;
+  const BOMB_H = 52 * SPRITE_SCALE;
+  const PLAYER_W = 120 * SPRITE_SCALE;
+  const PLAYER_H = 120 * SPRITE_SCALE;
 
   // objects
+  const laneW = W / LANES;
   for (const o of game.objects) {
     const x = o.lane * laneW + laneW / 2;
     const y = o.y;
@@ -295,6 +308,25 @@ function renderFrame() {
     ctx.font = "12px system-ui";
     ctx.fillText(["L", "M", "R"][basketLane], bx - 4, by - 18);
   }
+
+  // points popups (e.g. "+10", "+50")
+  const t = nowMs();
+  if (Array.isArray(game.popups) && game.popups.length) {
+    for (const p of game.popups) {
+      const k = (t - p.startedAt) / p.durationMs;
+      if (k < 0 || k >= 1) continue;
+      const alpha = 1 - k;
+      const y = p.y - 16 * k; // float up slightly
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = "rgba(34, 197, 94, 1)";
+      ctx.font = "900 22px system-ui";
+      ctx.shadowColor = "rgba(0,0,0,0.35)";
+      ctx.shadowBlur = 6;
+      ctx.fillText(p.text, p.x, y);
+      ctx.restore();
+    }
+  }
 }
 
 function startGame() {
@@ -308,6 +340,7 @@ function startGame() {
     score: 0,
     speedMult: 1,
     eggsCaught: 0,
+    popups: [],
     state: "playing",
   };
   scoreEl.textContent = "0";
@@ -379,6 +412,26 @@ function spawnObject() {
   });
 }
 
+function spawnPointsPopup(add) {
+  if (!game) return;
+  const W = viewW;
+  const H = viewH;
+  const laneW = W / LANES;
+  const PLAYER_H = 120 * SPRITE_SCALE;
+  const playerBottomMargin = 18;
+  const py = H - playerBottomMargin - PLAYER_H / 2;
+  const bx = game.lane * laneW + laneW / 2;
+
+  game.popups.push({
+    text: `+${add}`,
+    // чуть выше кота и чуть правее
+    x: bx + 18,
+    y: py - 34,
+    startedAt: nowMs(),
+    durationMs: 250,
+  });
+}
+
 function tick() {
   requestAnimationFrame(tick);
 
@@ -399,9 +452,9 @@ function tick() {
   }
 
   const fallSpeed = BASE_FALL_SPEED * game.speedMult;
-  const H = canvas.height;
+  const H = viewH;
   // Catch line: tuned to match player sprite placement (hands/basket area).
-  const catchY = H - 86;
+  const catchY = H - (86 * SPRITE_SCALE);
 
   // move + collisions
   const remaining = [];
@@ -421,6 +474,7 @@ function tick() {
       game.score += add;
       game.eggsCaught += 1;
       scoreEl.textContent = String(game.score);
+      spawnPointsPopup(add);
 
       // speed rule: starts from 50 points, then x1.01 for each caught egg
       if (game.score >= 50) {
@@ -443,8 +497,11 @@ function tick() {
     remaining.push(o);
   }
   game.objects = remaining;
+  if (Array.isArray(game.popups) && game.popups.length) {
+    game.popups = game.popups.filter((p) => (t - p.startedAt) < p.durationMs);
+  }
 
-  statusEl.textContent = `Скорость x${game.speedMult.toFixed(2)} • Бомбы ${game.score >= BOMB_START_SCORE ? "включены" : "выкл"}`;
+  statusEl.textContent = `Скорость x${game.speedMult.toFixed(2)}`;
   renderFrame();
 }
 
@@ -605,6 +662,7 @@ window.addEventListener("hashchange", onRoute);
 
 tick();
 onRoute();
+requestAnimationFrame(resizeCanvas);
 
 // start preloading images (non-blocking)
 loadAssets();

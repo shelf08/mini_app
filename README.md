@@ -41,6 +41,7 @@ ssh -R 80:localhost:8000 ssh.localhost.run
 
 ### 4) Запустить bot (в другом терминале)
 ```bash
+ & c:/Users/viplo/CursorProjects/mini_app/.venv/Scripts/Activate.ps1
 python -m bot.main
 ```
 
